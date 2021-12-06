@@ -7,6 +7,7 @@ import pandas as pd
 import scipy.stats as stats
 import scipy as sp
 import statistics
+from scipy.sparse import spdiags, csr_matrix
 
 class glm:
     def __init__(self, ST, P, hd):
@@ -277,6 +278,8 @@ class glm:
     
     def grad(self,param,x,y):
         '''compute the gradient of the loss fn'''
+        # these are the first order derivatives of the cost
+        # function with respect to [each of] the weights
         M, n = x.shape
         y_hat = np.exp(x @ param[1:] + param[0])
         dw = (x.T @ (y_hat - y)) / M
@@ -303,6 +306,62 @@ class glm:
         res = sp.optimize.minimize(self.loss, x0=param, args=data, method='L-BFGS-B', jac=self.grad)
         # options={'gtol': 1e-6, 'disp': True})
         return res
+    
+    
+    def rough_penalty(self,param,beta,vartype='1D-circ'):
+    '''computes roughness penalty
+    
+    inputs:
+    >> vartype:
+        >> '2D', '1D', or '1D-circ'
+    
+    returns:
+    >> J: penalty term for objective function
+    >> J_g: penalty term for gradient (1st order derivatives)
+    >> J_h: penalty term for Hessian (2nd order derivatives)
+    
+    '''
+    
+    numParam = len(param)
+    
+    if vartype.__contains__('1D'):
+        data_diag = np.ones(int(numParam))
+        data_diag = [-data_diag,data_diag]
+        diags_diag = np.array([0,1]) # diagonals to set
+        m,n = int(numParam)-1, int(numParam) # shape of resulting matrix
+        D1 = spdiags(data_diag, diags_diag, m, n).toarray()
+        DD1 = D1.T @ D1
+        
+        if vartype.__contains__('circ'):
+            # to correct the smoothing across first/last bin
+            DD1[0,:] = np.roll(DD1[1,:],((0, -1)))
+            DD1[-1,:] = np.roll(DD1[-1,:],((0, 1)))
+        
+        # penalty terms
+        J = beta * 0.5 * param.T @ DD1 @ param
+        J_g = beta * DD1 @ param
+        J_h = beta * DD1
+        
+    elif vartype.__contains__('2D'):
+        
+        data_diag = np.ones(int(np.sqrt(numParam)))
+        data_diag = [-data_diag,data_diag]
+        diags_diag = np.array([0,1]) # diagonals to set
+        m,n = int(np.sqrt(numParam))-1, int(np.sqrt(numParam)) # shape of resulting matrix
+        D1 = spdiags(data_diag, diags_diag, m, n).toarray()
+        DD1 = D1.T @ D1
+
+        M1 = np.kron(np.eye(int(np.sqrt(numParam))),DD1)
+        M2 = np.kron(DD1,np.eye(int(np.sqrt(numParam))))
+        M = (M1 + M2)
+
+        J = beta * 0.5 * param.T @ M @ param
+        J_g = beta * M @ param
+        J_h = beta * M 
+    
+    return J, J_g, J_h
+    
+    
     
     def get_stats(self, y, y_hat):
         # compare between test fr and model fr
@@ -372,7 +431,7 @@ class glm:
         }
         return testfit
     
-    def findBestModel(self,modelDict):
+    def findBestModel(self,allModels):
         '''modelDict is defined in the script below (incorporate)'''
         numModels = len(allModels)
         llh = np.zeros(numModels)
@@ -402,3 +461,4 @@ class glm:
         whichModel = np.vstack((whichModel[0], whichModel[1], whichModel[2]))
         df = pd.DataFrame(np.hstack((llh,whichModel)), columns = ['llh','whichModel'])
         ax = sns.swarmplot(x="whichModel", y="llh", data=df)
+        return ax
