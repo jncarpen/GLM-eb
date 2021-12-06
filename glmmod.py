@@ -1,16 +1,10 @@
 # preamble
-import scipy.io
-import time
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import math
 import pandas as pd
-import statsmodels.api as sm
-from patsy import dmatrices
-import scipy.sparse as sps
 import scipy.stats as stats
-from pyglmnet import GLM, simulate_glm
 import scipy as sp
 import statistics
 
@@ -22,11 +16,11 @@ class glm:
         self.y = P[:,2]
         self.t = P[:,0]
         self.hd = (hd[:,0]*np.pi)/180; # 0-2pi
-        self.dt = np.round(statistics.mode(np.diff(P[:,0])),2);
+        self.dt = np.round(statistics.mode(np.diff(P[:,0])),2)
         
     def get_size(self):
         '''get size of recording box'''
-        boxsz = np.max([np.max(self.x), np.max(self.y)]);
+        boxsz = np.max([np.max(self.x), np.max(self.y)])
         return boxsz
     
     def pos_map(self, nbins=10):
@@ -50,9 +44,9 @@ class glm:
         allo = np.arctan2(refy-self.y, refx-self.x) + (np.pi/2); # add 90 deg
         allo[allo<0] = allo[allo<0]+2*np.pi;
         ego = allo - self.hd; # shift from 0-2pi
-        egogrid = np.zeros((len(P),nbins));
+        egogrid = np.zeros((len(self.P),nbins));
         bins = np.arange(2*np.pi/nbins/2, 2*np.pi-2*np.pi/nbins/2, 2*np.pi/nbins) # 10 bin ctrs
-        for idx,val in enumerate(P):
+        for idx,val in enumerate(self.P):
             evec = np.abs(ego[idx]-bins)
             min_e = np.min(evec)
             idx_e = np.where(evec == min_e)
@@ -220,8 +214,8 @@ class glm:
             y_train_raw = df_train['y'].to_numpy(dtype='int64')
             
             # smooth firing rates
-            y_test, _, _, _ = g.conv_spktrain(defaultST=False,spikeIn=y_test_raw)
-            y_train, _, _, _ = g.conv_spktrain(defaultST=False,spikeIn=y_train_raw) 
+            y_test, _, _, _ = self.conv_spktrain(defaultST=False,spikeIn=y_test_raw)
+            y_train, _, _, _ = self.conv_spktrain(defaultST=False,spikeIn=y_train_raw) 
             
             # put smoothed firing rates back into dataframe
             df_test[df_test.columns[0]] = y_test; 
@@ -330,8 +324,8 @@ class glm:
         
         for fold in range(nfolds):
             # predict model output on *test* data
-            yhat_raw = g.get_rate(test_x[fold],kres[fold].x[1:],kres[fold].x[0]) # not normalized
-            yhat, _, _, _ = g.conv_spktrain(defaultST=False,spikeIn=yhat_raw) # normalized by dt (hz)
+            yhat_raw = self.get_rate(test_x[fold],kres[fold].x[1:],kres[fold].x[0]) # not normalized
+            yhat, _, _, _ = self.conv_spktrain(defaultST=False,spikeIn=yhat_raw) # normalized by dt (hz)
             
             # compare between test and model rates
             sse[fold] = np.sum((yhat-test_y[fold])**2); #sse
