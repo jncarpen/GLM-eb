@@ -104,10 +104,15 @@ class glm:
     
     def get_speed(self):
         '''get speed of the animal (cm*s^-2)'''
-        t=self.P[:,0]; x=self.P[:,1]; y=self.P[:,2];
-        ntime = len(t); v = np.zeros((ntime,1));
+        
+        t=self.P[:,0]
+        x=self.P[:,1]
+        y=self.P[:,2]
+        ntime = len(t)
+        v = np.zeros((ntime,1));
         
         for idx in range(1,ntime-1):
+            
             v[idx,0] = np.sqrt((x[idx+1]-x[idx-1])**2 + (y[idx+1]-y[idx-1])**2)/(t[idx+1]-t[idx-1])    
         v[0,0] = v[1,0]; v[-1,0] = v[-2,0] # pad the array
         
@@ -139,7 +144,7 @@ class glm:
             _,nbins_p = np.shape(posgrid)
             A = np.zeros((ntime, nbins_p+nbins_eb)) #P+EB
             A[:,0:nbins_p] = posgrid; A[:,nbins_p:] = ebgrid
-            df=pd.DataFrame(A)
+            df = pd.DataFrame(A)
             
             # name columns & get expression
             colnames = [];
@@ -363,23 +368,28 @@ class glm:
             J_pos, J_pos_g, J_pos_h = self.rough_penalty(param,b_pos,vartype='2D')
             
             y_hat += J_pos
-            jac += J_pos_g
+            jac += np.concatenate((np.zeros(1), J_pos_g))
             
         elif modelType == 'E':
             J_eb, J_eb_g, J_eb_h = self.rough_penalty(param,b_eb,vartype='1D-circ')
             
             y_hat += J_eb
-            jac += J_eb_g
+            jac += np.concatenate((np.zeros(1), J_eb_g))
             
         elif modelType == 'PE':
-            J_pos, J_pos_g, J_pos_h = self.rough_penalty(param[:100],b_pos,vartype='2D')
-            J_eb, J_eb_g, J_eb_h = self.rough_penalty(param[100:],b_eb,vartype='1D-circ')
+            # split parameters for P and E
+            # @note: this should be soft-coded later
+            biasterm = param[0]
+            param_pos = np.append(biasterm, param[1:101])
+            param_eb = np.append(biasterm, param[101:])
+
+            J_pos, J_pos_g, J_pos_h = self.rough_penalty(param_pos,b_pos,vartype='2D')
+            J_eb, J_eb_g, J_eb_h = self.rough_penalty(param_eb,b_eb,vartype='1D-circ')
 
             y_hat += J_pos
             y_hat += J_eb
-            jac += J_pos_g
-            jac += J_eb_g
-                    
+            jac += np.concatenate((np.zeros(1), J_pos_g, J_eb_g))
+                                
         else:
             print('error: enter valid model type ("E", "P", "PE")')
         
@@ -446,15 +456,10 @@ class glm:
             M1 = np.kron(np.eye(int(np.sqrt(numParam))),DD1)
             M2 = np.kron(DD1,np.eye(int(np.sqrt(numParam))))
             M = (M1 + M2)
-
+            
             J = beta * 0.5 * param.T @ M @ param
             J_g = beta * M @ param
             J_h = beta * M 
-        
-        # add the bias term for the gradient *
-        # @note: this has not been done for the hessian (but we will need
-        # to if we want to use it)
-        J_g = np.concatenate((np.zeros(1), J_g))
         
         return J, J_g, J_h
     
