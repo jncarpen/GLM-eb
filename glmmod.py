@@ -396,6 +396,9 @@ class glm:
         #negative log likelihood for possion where yhat is lambda
         error = (y_hat - np.log(y_hat) * y).mean()
         
+        # only take the real part of the jacobian
+        jac = np.real(jac)
+        
         return [error,jac]
     
     
@@ -574,6 +577,6 @@ class glm:
         llh = np.vstack((llh[0], llh[1], llh[2]))
         whichModel = np.vstack((whichModel[0], whichModel[1], whichModel[2]))
         df = pd.DataFrame(np.hstack((llh,whichModel)), columns = ['llh','whichModel'])
-        ax = sns.swarmplot(x="whichModel", y="llh", data=df)
+        ax = sns.swarmplot(x="whichModel", y="llh", data=df);
         
         return ax
