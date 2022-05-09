@@ -7,7 +7,6 @@ import seaborn as sns
 import math
 import pandas as pd
 import scipy as sp
-import warnings
 import statistics
 import mat73
 
@@ -22,7 +21,7 @@ class glm:
         self.x = P[keep_idx,1]
         self.y = P[keep_idx,2]
         self.t = P[keep_idx,0]
-        self.hd = hd[keep_idx,0]*(np.pi/180); # 0-2pi
+        self.hd = hd[keep_idx,0];# make sure input is [0,2pi]
         self.dt = P[1,0]-P[0,0]
         self.ST = ST # spiketimes (not train)
         
@@ -51,7 +50,7 @@ class glm:
             idx_x = np.where(xvec == min_x); idx_x = idx_x[0][0];
             idx_y = np.where(yvec == min_y); idx_y = idx_y[0][0];
             bin_idx = np.ravel_multi_index((idx_y,idx_x), dims=(nbins,nbins), order='C') # a11=0, a12=1, a13=2;
-            posgrid[idx, bin_idx] = 1;
+            posgrid[idx, bin_idx] = 1
             
         return posgrid, bins
     
@@ -60,34 +59,36 @@ class glm:
     def eb_map(self, nbins=10, rp=[75,75]):
         '''design matrix for egocentric variables'''
         
-        refx = rp[0]; refy = rp[1];
-        allo = np.arctan2(refy-self.y, refx-self.x) + (np.pi/2); # add 90 deg
-        allo[allo<0] = allo[allo<0]+2*np.pi; # shift 0-2pi
-        ego = allo - self.hd
-        egogrid = np.zeros((len(self.P),nbins));
-        bins = np.arange(2*np.pi/nbins/2, 2*np.pi-2*np.pi/nbins/2, 2*np.pi/nbins) # 10 bin ctrs
-        
-        for idx,val in enumerate(self.P):
-            
-            evec = np.abs(ego[idx]-bins)
-            min_e = np.min(evec)
-            idx_e = np.where(evec == min_e)
-            egogrid[idx, idx_e] = 1;
-            
-        return egogrid, bins
+        refx = rp[0]; refy = rp[1]
+        allo = (np.arctan2(refy-self.y, refx-self.x) + (np.pi/2)) % (2*np.pi) # add 90 deg (so that up is 0 deg)
+        ego = (allo - self.hd) % (2*np.pi)
+        ego = sp.ndimage.gaussian_filter1d(ego, 3) # smooth by 3 std.
+        egogrid = np.zeros((len(self.P),nbins))
+
+        bins = np.linspace(0, 2*np.pi,nbins+1)
+        bins[0] = -0.0001
+        bins[-1] = 2.*np.pi+0.0001
+
+        for i in np.arange(nbins):
+            whiches = (ego>bins[i])*(ego<=bins[i+1])
+            egogrid[whiches, i] = 1
+
+        # print(np.sum(egogrid,axis=0))
+
+        return egogrid,ego, bins
 
     def hd_map(self, nbins=10):
         '''design matrix for head direction'''
-
+        hd = sp.ndimage.gaussian_filter1d(self.hd, 3) # smooth by 3 std.
         hdgrid = np.zeros((len(self.P),nbins));
-        bins = np.arange(2*np.pi/nbins/2, 2*np.pi-2*np.pi/nbins/2, 2*np.pi/nbins) # 10 bin ctrs
-        
-        for idx,val in enumerate(self.P):
-            
-            evec = np.abs(self.hd[idx]-bins)
-            min_e = np.min(evec)
-            idx_e = np.where(evec == min_e)
-            hdgrid[idx, idx_e] = 1;
+
+        bins = np.linspace(0, 2*np.pi,nbins+1)
+        bins[0] = -0.0001
+        bins[-1] = 2.*np.pi+0.0001
+
+        for i in np.arange(nbins):
+            whiches = (hd>bins[i])*(hd<=bins[i+1])
+            hdgrid[whiches, i] = 1
             
         return hdgrid, bins
     
@@ -144,18 +145,19 @@ class glm:
     
     
     
-    def speed_threshold(self,posgrid,ebgrid,hdgrid,spiketrain):
+    def speed_threshold(self,inputData):
         
         v = self.get_speed()
         maxspeed=50; minspeed=4
         inbounds = np.logical_and((v<=maxspeed), (v>=minspeed))
         inbounds = np.where(inbounds==True); inbounds = inbounds[0]
-        posgrid = posgrid[inbounds,:]
-        ebgrid = ebgrid[inbounds,:]
-        hdgrid = hdgrid[inbounds,:]
-        spiketrain = spiketrain[inbounds]
-        
-        return posgrid, ebgrid, hdgrid, spiketrain
+
+        if np.ndim(inputData) == 1:
+            filtData = inputData[inbounds]
+        if np.ndim(inputData) == 2:
+            filtData = inputData[inbounds,:]
+
+        return filtData
     
     
     
@@ -246,6 +248,7 @@ class glm:
             expr = expr + 'H9'
             colnames.append('H9')
             df.columns = colnames
+
         elif modelType == 'PH':
             posgrid = stateIn[0]; hdgrid = stateIn[1]
             ntime,nbins_hd = np.shape(hdgrid)
@@ -329,10 +332,9 @@ class glm:
     
     
     
-    def kfoldOptim(self,kfoldIdx_df,statemat,modelType='PE'):
+    def kfoldOptim(self,kfoldIdx_df,statemat,initParam,modelType='PE'):
         '''kfoldIdx_df can be retrieved from self.kfoldSplit()'''
-        # warnings.filterwarnings("ignore", category=FutureWarning)
-        
+                
         # intialize output structures
         _,nfolds=np.shape(kfoldIdx_df)
         k_vec = np.arange(nfolds)
@@ -356,8 +358,8 @@ class glm:
             # train-test statemats
             df_test = statemat.loc[idx_test,:].dropna()
             df_train = statemat.loc[idx_train,:].dropna()
-            y_test = df_test['y'].to_numpy(dtype='int64') # spike count
-            y_train = df_train['y'].to_numpy(dtype='int64') # spike count
+            y_test = df_test['y'].to_numpy(dtype='int64') # spike count (not binary)
+            y_train = df_train['y'].to_numpy(dtype='int64') # spike count (not binary)
             
             ## IF YOU WANT TO REPLACE COUNTS W/ SMOOTHED RATE
                 # # smooth firing rates
@@ -369,19 +371,19 @@ class glm:
                 # df_train[df_train.columns[0]] = y_train
             
             # test/train arrays
-            X_test = df_test[df_test.columns[1:]].to_numpy(); 
+            X_test = df_test[df_test.columns[1:]].to_numpy() # remove y from df
             y_test = df_test[df_test.columns[0]].to_numpy()
-            X_train = df_train[df_train.columns[1:]].to_numpy()
+            X_train = df_train[df_train.columns[1:]].to_numpy() # remove y from df
             y_train = df_train[df_train.columns[0]].to_numpy()
             
             # set some initial parameters
-            M,n = np.shape(X_train)
-            w_0 = np.ones((n, ))*1e-3
+            #_,n = np.shape(X_train)
+            w_0 = initParam #np.ones((n, ))*1e-3
             b_0 = 1
             # alpha = 0.001 (can't remember when we use this)
             
-            # get parameters & jacobian (1st order derivatives of loss fn)
-            data,param = self.getDataParam(X_train,y_train,w_0,b_0,modelType)
+            # format arguments for the optimization algorithm
+            data,param = self.getDataParam(X_train,y_train,w_0,b_0,modelType,useBeta="False") # ignore bias term
             
             # not being used ** (depreciated right now)
             # jac = self.grad(param,X_train,y_train)
@@ -393,8 +395,6 @@ class glm:
             kres[foldnum] = res
             train_y[foldnum] = y_train; test_y[foldnum] = y_test
             train_x[foldnum] = X_train; test_x[foldnum] = X_test 
-
-            # warnings.filterwarnings("default", category=FutureWarning)
             
         return kres,train_y, test_y, train_x, test_x, data, param
     
@@ -412,111 +412,149 @@ class glm:
         return init_param
     
     
-    def getDataParam(self,x,y,w,b,modelType='PE'):
+    def getDataParam(self,x,y,w,b,modelType='PE',useBeta = "False"):
         '''put param & data in a dictionary'''
-        
-        param = np.append(b,w)
+
+        if useBeta == "True":
+            param = np.append(b,w)
+        elif useBeta == "False":
+            param = w
+
         data =  ((x, y, modelType))
         
         return data,param
     
     
-    def get_rate(self,x,w,b):
+    def get_rate(self,x,betaWeights):
         '''conditional intensity function'''
         
         # note: not normalized by dt (not in Hz)
         # Hardcastle normalizes this! but then un-normalizes when the 
         # Poisson LLH is calculated
-        y_hat = np.exp(x @ w + b)
+        # y_hat = np.exp(x @ w + b) if you want the bias term use this
+
+        y_hat = np.exp(x @ betaWeights)
         
         return y_hat
     
     
     def loss(self,param,x,y,modelType):
         '''objective function'''
-        # roughness regularizer weights
-        b_pos = 8e0; b_eb = 5e1; b_hd = 5e1;
+        # roughness regularizer weights (from Hardcastle)
+        b_pos = 8 #e0; 
+        b_eb = 5e1 
+        b_hd = 5e1 #5e1;
 
         x = np.float64(x) # 64 bit precision
                 
-        M, n = np.shape(x)
-        
-        # predicted firing rate (normalized to Hz)
-        y_hat = np.exp(x @ param[1:] + param[0])
-        
+        # M, n = np.shape(x) ## not in use
+
+        # start calculating error
+        u = x @ param # natural parameter, log(rate) AKA log(y_hat)
+        rate = np.exp(u) # could also use the self.get_rate() method
+        f = np.sum(rate - y * u) # -LLH
+
         # compute jacobian (gradient)
-        dw = (x.T @ (y_hat - y)) / M
-        db = (y_hat - y).mean()
-        jac = dw; jac = np.append(jac,db);
-        
+        useBias = 'False' # @note: make into an arg
+
+        dw = (x.T @ (rate - y)) # derivative of -LLH (should we divide by M?)
+
+        if useBias == 'False':
+                jac = dw
+        elif useBias == 'True':
+            db = (rate - y).mean() # derivative of bias term
+            jac = dw; jac = np.append(jac,db)
         
         ## penalize objective fn & gradient
         if modelType == 'P':
             J_pos, J_pos_g, J_pos_h = self.rough_penalty(param,b_pos,vartype='2D')
-            
-            y_hat += J_pos
-            jac += np.concatenate((np.zeros(1), J_pos_g))
+            f += J_pos
+
+            if useBias == 'False':
+                jac += J_pos_g
+            elif useBias == 'True':
+                jac += np.concatenate((np.ones(1)*1e-3, J_pos_g))
             
         elif modelType == 'E':
             J_eb, J_eb_g, J_eb_h = self.rough_penalty(param,b_eb,vartype='1D-circ')
+            f += J_eb
+
+            if useBias == 'False':
+                jac += J_eb_g
+            elif useBias == 'True':
+                jac += np.concatenate((np.ones(1)*1e-3, J_eb_g))
             
-            y_hat += J_eb
-            jac += np.concatenate((np.zeros(1), J_eb_g))
             
         elif modelType == 'PE': 
             # split parameters for P and E
             # @note: this should be soft-coded later
-            biasterm = param[0]
-            param_pos = np.append(biasterm, param[1:101])
-            param_eb = np.append(biasterm, param[101:])
+            param_pos = param[0:100]
+            param_eb = param[100:]
 
             J_pos, J_pos_g, J_pos_h = self.rough_penalty(param_pos,b_pos,vartype='2D')
             J_eb, J_eb_g, J_eb_h = self.rough_penalty(param_eb,b_eb,vartype='1D-circ')
 
-            y_hat += J_pos
-            y_hat += J_eb
-            jac += np.concatenate((np.zeros(1), J_pos_g, J_eb_g))
+            f += J_pos
+            f += J_eb
+
+            if useBias == 'False':
+                jac += np.concatenate((J_pos_g, J_eb_g))
+            elif useBias == 'True':
+                jac += np.concatenate((np.ones(1)*1e-3, J_pos_g, J_eb_g))
 
         elif modelType == 'PH':
             # split parameters for P and E
             # @note: this should be soft-coded later
-            biasterm = param[0]
-            param_pos = np.append(biasterm, param[1:101])
-            param_hd = np.append(biasterm, param[101:])
+            # biasterm = param[0] param_pos = np.append(biasterm, param[1:101])
+            param_pos = param[0:100]
+            param_hd = param[100:]
 
             J_pos, J_pos_g, J_pos_h = self.rough_penalty(param_pos,b_pos,vartype='2D')
             J_hd, J_hd_g, J_hd_h = self.rough_penalty(param_hd,b_hd,vartype='1D-circ')
 
-            y_hat += J_pos
-            y_hat += J_hd
-            jac += np.concatenate((np.zeros(1), J_pos_g, J_hd_g))
+            f += J_pos
+            f += J_hd
+
+            if useBias == 'False':
+                jac += np.concatenate((J_pos_g, J_hd_g))
+            elif useBias == 'True':
+                jac += np.concatenate((np.ones(1)*1e-3, J_pos_g, J_hd_g))
 
         elif modelType == 'H': # ADDING HD MODEL
             J_hd, J_hd_g, J_hd_h = self.rough_penalty(param,b_hd,vartype='1D-circ')
             
-            y_hat += J_hd
-            jac += np.concatenate((np.zeros(1), J_hd_g))
+            f += J_hd
+
+            if useBias == 'False':
+                jac += J_hd_g
+            elif useBias == 'True':
+                jac += np.concatenate((np.ones(1)*1e-3, J_hd_g))
                                 
         else:
             print('error: enter valid model type ("E", "P", "PE", "PH", or "H")')
         
         #negative log likelihood for possion where yhat is lambda (rate parameter)
-        y_hat_log = y_hat
-        result = np.where(y_hat_log == 0, y_hat_log, 1e-10)
-        logTerm = np.log(result, out=result, where=result>0)
-        error = (y_hat - logTerm * y).mean()
+        
+        #WHY IS ROUGHNESS IN Y_HAT? IS LOGTERM OK?
+        #y_hat_log = rate
+        #result = np.where(y_hat_log == 0, y_hat_log, 1e-10)
+        #logTerm = np.log(result, out=result, where=result>0) ## ???? wht hAPPENS when there are 0's
+        # @note: define error above 
+        #error = (rate - logTerm * y).mean()
         
         # only take the real part of the jacobian
         jac = np.real(jac)
         
-        return [error,jac]
+        return [f,jac] # return f instead of 'error'
     
     
     
     def bfgs(self,data,param):
         'minimize loss function w/ L-BFGS-B'
-        
-        res = sp.optimize.minimize(self.loss, x0=param, args=data, method='L-BFGS-B', jac=True, options={'disp': True})
+
+        # print(np.sum(data[0], axis=0))
+
+        res = sp.optimize.minimize(self.loss, x0=param, args=data, method='L-BFGS-B', jac=True, options={'iprint': 1})
         # options={'gtol': 1e-6, 'disp': True}) # add options 
         
         return res
@@ -536,7 +574,7 @@ class glm:
         >> J_h: penalty term for Hessian (2nd order derivatives)
 
         '''
-        param = param[1:] # remove the bias term
+        # param = param[1:] # remove the bias term (should already be removed)
         numParam = len(param)
 
         if vartype.__contains__('1D'):
@@ -545,17 +583,17 @@ class glm:
             diags_diag = np.array([0,1]) # diagonals to set
             m,n = int(numParam)-1, int(numParam) # shape of resulting matrix
             D1 = sp.sparse.spdiags(data_diag, diags_diag, m, n).toarray()
-            DD1 = D1.T @ D1
+            DD1 = D1.T @ D1 # nearby bins are correlated
 
             if vartype.__contains__('circ'):
                 # to correct the smoothing across first/last bin
                 DD1[0,:] = np.roll(DD1[1,:],((0, -1)))
-                DD1[-1,:] = np.roll(DD1[-1,:],((0, 1)))
+                DD1[-1,:] = np.roll(DD1[-2,:],((0, 1)))
 
             # penalty terms
             J = beta * 0.5 * param.T @ DD1 @ param
             J_g = beta * DD1 @ param # gradient
-            J_h = beta * DD1 # hessian
+            J_h = beta * DD1 # hessian (matrix w/ diagonal elements)
 
         elif vartype.__contains__('2D'):
 
@@ -603,7 +641,7 @@ class glm:
         for fold in range(nfolds):
             # predict model output on *test* data
             bestp = bestp = kres[1].x #/1e10  # best parameters (divided to make them small)
-            yhat_raw = self.get_rate(test_x[fold],bestp[1:],bestp[0]) # not normalized
+            yhat_raw = self.get_rate(test_x[fold],bestp) # not normalized
             yhat, _, _, _ = self.conv_spktrain(defaultST=False,spikeIn=yhat_raw) # normalized by dt (hz)
             
 
@@ -637,7 +675,7 @@ class glm:
             
             # akaike info criterion
             # log is undefined b/c llh is negative
-            AIC = 2*(len(bestp))-2*np.log(log_llh_test);
+            #AIC = 2*(len(bestp))-2*np.log(log_llh_test);
             
             # plain LLH (from loss function)
             [error,jac] = self.loss(kres[fold].x,test_x[fold],test_y[fold],modelType)
@@ -653,8 +691,8 @@ class glm:
             'pearson_r': pearson_r,
             'pearson_pval': pearson_pval,
             'funval': funval,
-            'yhat': yhatDict,
-            'AIC': AIC
+            'yhat': yhatDict
+            #'AIC': AIC
         }
         return testfit
 
@@ -673,17 +711,50 @@ class glm:
         return modelPackage
 
 
-    def modelSelection(self,allModels,labelDict):
+    def modelSelection(self,allModels,labelDict,procedure="best"):
         '''modelDict is defined in the script below (incorporate)'''
-        
+
+        # number of variables in each model. we can't do fwd
+        # model selection without at least one 2-variable model
         numModels = len(allModels)
-        llh = np.zeros(numModels)
+        numVarPerModel = np.zeros((numModels,1))
+        for modelIdx in labelDict:
+            numVarPerModel[modelIdx] = len(labelDict[modelIdx])
         
+        # model performance information
+        llh = np.zeros(numModels)
         for model in range(numModels):
             T = allModels[model]['testfit']
-            llh[model] = np.nanmean(T['loss_llh'])
-        bestModel=np.where(llh==np.max(llh))[0][0]
-        
+            # likelihood test statistic
+            llh[model] = np.nanmean(T['llh_test'])
+
+        # select best model
+        if procedure == "best":
+            bestModel=np.where(llh==np.max(llh))[0][0]
+            pLLH12 = np.nan # @note: get a better solution for this
+
+        elif procedure == "forward":
+            if any(numVarPerModel >= 2):
+                singleModels,_ = np.where(numVarPerModel==1)
+                doubleModels,_ = np.where(numVarPerModel==2)
+                # find best single model
+                top1 = np.where(llh == np.max(llh[singleModels]))[0][0]
+                if labelDict[top1] == "P":
+                    top2 = np.where(llh == np.max(llh[doubleModels]))[0][0]
+                elif labelDict[top1] == "E":
+                    top2 = 0 # PE model
+                elif labelDict[top1] == "H":
+                    top2 = 4 # PH model
+                LLH1 = allModels[top1]['testfit']['llh_test']
+                LLH2 = allModels[top2]['testfit']['llh_test']
+                # wilcoxon signrank test
+
+                _,pLLH12 = sp.stats.wilcoxon(LLH2,LLH1, alternative='less') # signed-rank test (right tailed)
+                if pLLH12 < 0.05: # means double model is significantly better
+                    bestModel = top2
+                else:
+                    bestModel = top1
+
         print('best model: ' + labelDict[bestModel])
         
         return llh, bestModel
